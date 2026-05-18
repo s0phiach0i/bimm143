@@ -1,0 +1,357 @@
+---
+title: "Class 8: Unsupervised Learning Analysis of Human Breast Cancer Cells"
+author: "Sophia Choi"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: false
+    embed-resources: true
+  pdf: default
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+
+This mini-project uses unsupervised learning (PCA + hierarchical clustering) on the
+Wisconsin Breast Cancer Diagnostic Data Set. Features describe cell nuclei from fine
+needle aspiration (FNA) biopsies of breast masses, with each sample labeled by a
+pathologist as **M** (malignant) or **B** (benign). We will *not* use that label for
+clustering, only to evaluate our unsupervised results at the end.
+
+**Headline results:**
+
+- The dataset has 569 patients with 30 cell-nucleus measurements each; 212 are malignant.
+- PC1 alone captures 44.3% of the total variance; 7 PCs are needed to reach 90%.
+- `concave.points_mean`, `concavity_mean`, and compactness measures contribute most to PC1.
+- Clustering on the first 7 PCs with `ward.D2` linkage separates malignant from benign
+  samples much more cleanly than clustering on the raw 30 scaled features
+  (**sensitivity ≈ 0.89, specificity ≈ 0.92**).
+- Projecting two new patients onto this PCA space, **patient 1 should be prioritized
+  for follow-up**, they land in the malignant-dominated region of PC1 vs PC2.
+
+# Exploratory data analysis
+
+## Preparing the data
+
+```{r}
+#| label: load-data
+fna.data <- "WisconsinCancer.csv"
+wisc.df <- read.csv(fna.data, row.names=1)
+head(wisc.df, 4)
+```
+
+Drop the expert `diagnosis` column so we don't accidentally use it during the
+unsupervised analysis, and save it separately as a factor for later checks.
+
+```{r}
+#| label: split-data
+wisc.data <- wisc.df[, -1]
+diagnosis <- as.factor(wisc.df$diagnosis)
+```
+
+## Q1. How many observations are in this dataset?
+
+```{r}
+#| label: q1
+nrow(wisc.data)
+```
+
+> **Answer:** There are **569 observations** in the dataset.
+
+## Q2. How many of the observations have a malignant diagnosis?
+
+```{r}
+#| label: q2
+table(diagnosis)
+sum(diagnosis == "M")
+```
+
+> **Answer:** **212 of the 569 observations** have a malignant (`M`) diagnosis (the remaining 357 are benign).
+
+## Q3. How many variables/features in the data are suffixed with `_mean`?
+
+```{r}
+#| label: q3
+length(grep("_mean$", colnames(wisc.data)))
+```
+
+> **Answer:** **10 features** are suffixed with `_mean` (one per measurement type: `radius_mean`, `texture_mean`, `perimeter_mean`, `area_mean`, `smoothness_mean`, `compactness_mean`, `concavity_mean`, `concave.points_mean`, `symmetry_mean`, `fractal_dimension_mean`).
+
+# Principal Component Analysis
+
+## Performing PCA
+
+Check whether we need to scale, features have very different means/variances, so yes.
+
+```{r}
+#| label: check-scale
+round(colMeans(wisc.data), 3)
+round(apply(wisc.data, 2, sd), 3)
+```
+
+```{r}
+#| label: pca
+wisc.pr <- prcomp(wisc.data, scale = TRUE)
+summary(wisc.pr)
+```
+
+## Q4. Proportion of variance captured by PC1?
+
+> **Answer:** PC1 captures **44.27%** of the total variance (0.4427).
+
+## Q5. How many PCs are required to describe at least 70% of the variance?
+
+> **Answer:** **3 PCs**, the cumulative proportion reaches 72.64% at PC3 (PC1 + PC2 + PC3 = 44.27% + 18.97% + 9.39%).
+
+## Q6. How many PCs are required to describe at least 90% of the variance?
+
+> **Answer:** **7 PCs**, the cumulative proportion reaches 91.01% at PC7.
+
+## Interpreting PCA results
+
+A biplot is typically hard to read for data of this size:
+
+```{r}
+#| label: biplot
+#| fig-width: 8
+#| fig-height: 8
+biplot(wisc.pr)
+```
+
+## Q7. What stands out in the biplot? Is it easy or difficult to understand?
+
+> **Answer:** It is **very difficult to understand**. With 569 observations `biplot()` uses the row names (patient IDs) as the plotting symbol, so the samples overlap into a dense blob, and all 30 feature-loading arrows fan out on top of them. There is no obvious grouping visible, and the patient IDs carry no biological meaning. A clean PC1-vs-PC2 scatter plot colored by diagnosis (below) is far more informative.
+
+A much cleaner PC1 vs PC2 scatter plot, colored by diagnosis:
+
+```{r}
+#| label: pc1-pc2
+library(ggplot2)
+ggplot(as.data.frame(wisc.pr$x)) +
+  aes(PC1, PC2, col = diagnosis) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "PC1 vs PC2 colored by diagnosis")
+```
+
+## Q8. Generate a similar plot for PC1 vs PC3. What do you notice?
+
+```{r}
+#| label: q8-pc1-pc3
+ggplot(as.data.frame(wisc.pr$x)) +
+  aes(PC1, PC3, col = diagnosis) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "PC1 vs PC3 colored by diagnosis")
+```
+
+> **Answer:** The PC1-vs-PC3 plot looks similar to PC1-vs-PC2 in that **PC1 still cleanly separates malignant from benign** samples along the x-axis. However, PC3 explains less variance (9.4%) than PC2 (19.0%), so the two groups are *slightly* less separated in the y-direction, the points are more vertically mixed than in PC1-vs-PC2. This confirms that most of the M/B signal is concentrated in PC1, with PC2 contributing more than PC3.
+
+## Variance explained
+
+```{r}
+#| label: variance-explained
+pr.var <- wisc.pr$sdev^2
+pve    <- pr.var / sum(pr.var)
+
+plot(pve, xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     ylim = c(0, 1), type = "o")
+
+barplot(pve, ylab = "Percent of Variance Explained",
+        names.arg = paste0("PC", 1:length(pve)), las = 2, axes = FALSE)
+axis(2, at = pve, labels = round(pve, 2) * 100)
+```
+
+Optional: a nicer scree plot with `factoextra`.
+
+```{r}
+#| label: scree-factoextra
+library(factoextra)
+fviz_eig(wisc.pr, addlabels = TRUE)
+```
+
+## Q9. PC1 loading for `concave.points_mean`? Any larger contributions?
+
+```{r}
+#| label: q9
+wisc.pr$rotation["concave.points_mean", 1]
+
+sort(abs(wisc.pr$rotation[, 1]), decreasing = TRUE) |> head(10)
+```
+
+> **Answer:** The PC1 loading for `concave.points_mean` is **−0.2609**. Its absolute value (0.2609) is the **largest** of any feature on PC1, no feature contributes more to PC1. The next-largest are `concavity_mean` (0.2584), `concave.points_worst` (0.2509), and `compactness_mean` (0.2393), so the dominant drivers of PC1 are the concavity and compactness measurements, which makes biological sense: malignant cell nuclei tend to have more irregular, concave contours.
+
+# Hierarchical clustering
+
+Hierarchical clustering on the original (scaled) 30 features.
+
+```{r}
+#| label: hclust
+data.scaled <- scale(wisc.data)
+data.dist   <- dist(data.scaled)
+wisc.hclust <- hclust(data.dist, method = "complete")
+```
+
+## Q10. Height at which the model has 4 clusters?
+
+```{r}
+#| label: q10
+plot(wisc.hclust)
+abline(h = 19, col = "red", lty = 2)  # adjust height so the dashed line cuts into exactly 4 clusters
+```
+
+> **Answer:** The 4-cluster cut occurs at a **height of ≈ 19** (any height between 18.64 and 20.24 cuts the dendrogram into exactly 4 clusters; using `h = 19` gives 4 clusters).
+
+## Selecting number of clusters
+
+```{r}
+#| label: cutree-4
+wisc.hclust.clusters <- cutree(wisc.hclust, k = 4)
+table(wisc.hclust.clusters, diagnosis)
+```
+
+## Q11. (OPTIONAL) Better cluster-vs-diagnoses match with k between 2 and 6?
+
+```{r}
+#| label: q11-optional
+for (k in 2:6) {
+  cat("\n--- k =", k, "---\n")
+  print(table(cutree(wisc.hclust, k = k), diagnosis))
+}
+```
+
+> **Answer (optional):** No, I could not find a clearly better split. With **complete linkage**, increasing `k` mostly produces tiny fragmented clusters rather than cleaner M/B separation. At `k = 2` and `k = 3` nearly everything is dumped into one big cluster (357 B + 210 M together), which is useless. At `k = 4` we finally get a useful split, cluster 1 is M-dominant (12 B, 165 M) and cluster 3 is B-dominant (343 B, 40 M). At `k = 5` and `k = 6` the B-dominant cluster starts splintering without improving the M/B boundary, so `k = 4` remains the best complete-linkage result.
+
+## Q12. Which linkage method gives your favorite results?
+
+```{r}
+#| label: q12-methods
+for (m in c("single", "complete", "average", "ward.D2")) {
+  cat("\n--- method =", m, "---\n")
+  h <- hclust(data.dist, method = m)
+  print(table(cutree(h, k = 2), diagnosis))
+}
+```
+
+> **Answer:** **`ward.D2` is my favorite.** At `k = 2`, `single`, `complete`, and `average` linkage all collapse the data into one giant cluster (357 B + 210 M together) plus a tiny outlier group of 2–3 points, they fail to separate malignant from benign at all. `ward.D2` is the only method that produces two **balanced, biologically meaningful** clusters at `k = 2`: cluster 1 is M-dominant (20 B, 164 M) and cluster 2 is B-dominant (337 B, 48 M). This is because Ward's method minimizes within-cluster variance at each merge, which is well-suited to data like this where the groups are roughly spherical in the scaled feature space.
+
+# Combining methods
+
+## Clustering on PCA results
+
+Use the minimum number of PCs required to explain at least 90% of the variance
+(from Q6, typically the first 7 PCs).
+
+```{r}
+#| label: pr-hclust
+wisc.pr.hclust <- hclust(dist(wisc.pr$x[, 1:7]), method = "ward.D2")
+plot(wisc.pr.hclust)
+```
+
+```{r}
+#| label: pr-clusters-2
+grps <- cutree(wisc.pr.hclust, k = 2)
+table(grps)
+table(grps, diagnosis)
+
+ggplot(as.data.frame(wisc.pr$x)) +
+  aes(PC1, PC2) +
+  geom_point(col = grps) +
+  theme_minimal() +
+  labs(title = "PC1 vs PC2 colored by hclust-on-PC cluster")
+```
+
+```{r}
+#| label: pr-hclust-clusters
+wisc.pr.hclust.clusters <- cutree(wisc.pr.hclust, k = 2)
+```
+
+## Q13. How well does the new hclust model (on PCs) with 2 clusters separate M and B?
+
+```{r}
+#| label: q13
+table(wisc.pr.hclust.clusters, diagnosis)
+```
+
+> **Answer:** The two-cluster model on the first 7 PCs separates the diagnoses **very well**. Cluster 1 contains 28 B and **188 M** (largely malignant), and cluster 2 contains **329 B** and 24 M (largely benign). That means 188 of 212 malignant samples (88.7%) and 329 of 357 benign samples (92.2%) are correctly grouped, a clean, balanced split with only about 52 misclassifications out of 569 total.
+
+## Q14. How well did the earlier hclust (no PCA) do?
+
+```{r}
+#| label: q14
+table(wisc.hclust.clusters, diagnosis)
+```
+
+> **Answer:** The original hclust on the 30 scaled features (complete linkage, `k = 4`) does a **decent but messier** job. Cluster 1 is strongly malignant (12 B, 165 M) and cluster 3 is strongly benign (343 B, 40 M), but the clean signal is spread across 4 clusters (with two tiny side clusters containing 7 and 2 points). The **PCA + `ward.D2` model is noticeably cleaner**, it achieves a similar M/B separation using only 2 clusters, captures more of the malignant samples (188 M vs 165 M in the M-dominant cluster), and produces a result that is easier to interpret and evaluate.
+
+# Sensitivity / Specificity
+
+Given:
+
+- **Sensitivity** = TP / (TP + FN), a fraction of true malignant samples captured by
+  the cluster dominated by M.
+- **Specificity** = TN / (TN + FP), a fraction of true benign samples captured by
+  the cluster dominated by B.
+
+## Q15. (OPTIONAL) Which procedure gave the best specificity? Sensitivity?
+
+```{r}
+#| label: q15-optional
+sens_spec <- function(tbl) {
+  mc <- which.max(tbl[, "M"])
+  bc <- which.max(tbl[, "B"])
+  TP <- tbl[mc, "M"]; FN <- sum(tbl[, "M"]) - TP
+  TN <- tbl[bc, "B"]; FP <- sum(tbl[, "B"]) - TN
+  c(sensitivity = TP / (TP + FN), specificity = TN / (TN + FP))
+}
+
+res <- rbind(
+  `PCA + hclust (ward.D2, k=2)` = sens_spec(table(wisc.pr.hclust.clusters, diagnosis)),
+  `hclust (complete, k=4)`      = sens_spec(table(wisc.hclust.clusters, diagnosis))
+)
+round(res, 4)
+```
+
+> **Answer (optional):**
+>
+> - **Best sensitivity:** `PCA + hclust` (sensitivity ≈ **0.887** vs 0.778 for the raw-feature hclust). It recovers 188 / 212 malignant samples.
+> - **Best specificity:** `hclust (complete, k=4)` (specificity ≈ **0.961** vs 0.922 for PCA + hclust). Its B-dominant cluster 3 has only 40 M out of 383 samples.
+>
+> In a cancer-screening context sensitivity is usually the more important metric (missing a malignant tumor is far worse than a false alarm), so **PCA + hclust is the preferred model overall**.
+
+# Prediction
+
+Project two new patient samples onto the existing PCA space.
+
+```{r}
+#| label: predict
+url <- "https://tinyurl.com/new-samples-CSV"
+new <- read.csv(url)
+npc <- predict(wisc.pr, newdata = new)
+npc
+```
+
+```{r}
+#| label: predict-plot
+plot(wisc.pr$x[, 1:2], col = grps)
+points(npc[, 1], npc[, 2], col = "blue", pch = 16, cex = 3)
+text(npc[, 1], npc[, 2], c(1, 2), col = "white")
+```
+
+## Q16. Which of these new patients should we prioritize for follow-up?
+
+> **Answer:** We should prioritize **Patient 1**. On the PC1-vs-PC2 plot, patient 1 lands at (PC1 = +2.58, PC2 = −3.14), which falls inside the **malignant-dominated cluster** (the right-hand/positive-PC1 group in our PCA + hclust model). Patient 2 lands at (PC1 = −4.75, PC2 = −3.01), clearly inside the benign-dominated cluster on the left. Since PC1 is the main axis separating malignant from benign, patient 1's large positive PC1 score flags them as needing follow-up, while patient 2's profile is consistent with benign samples.
+
+# Session info
+
+```{r}
+#| label: session-info
+sessionInfo()
+```
+
